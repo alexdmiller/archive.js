@@ -18,9 +18,11 @@ const IGNORE_FOR_LIST = ["index.md", "index.html", ".DS_Store"];
 const IGNORE_FOR_RENDER = [".DS_Store", "IGNORE"];
 const OUTPUT_CACHE_FILE = ".build_cache";
 
-const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png"];
-const VIDEO_EXTENSIONS = [".mov", ".mp4"];
+const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png"];
+const VIDEO_EXTENSIONS = ["mov", "mp4"];
 const ALL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS.concat(VIDEO_EXTENSIONS);
+
+const TAG_CHARACTER = "++";
 
 const template = fs.readFileSync(TEMPLATE_FILE, "utf8");
 
@@ -81,21 +83,29 @@ async function renderDirectory(directoryPath) {
     return stat.isFile();
   });
 
-  renderIndex(directoryPath, files, subdirectories);
-
   for (const subdir of subdirectories) {
     await renderDirectory(`${directoryPath}/${subdir}`);
   }
 
-  for (const file of files) {
-    // Don't render index, because that is already handled by `renderDirectory` calls above
-    if (file !== "index.html" && file !== "index.md") {
-      await renderFile(`${directoryPath}/${file}`);
-    }
-  }
+  const fileMetaData = await Promise.all(
+    files
+      .filter((file) => file !== "index.html" && file !== "index.md")
+      .map(async (file) => await renderFile(`${directoryPath}/${file}`))
+  );
+
+  // TODO: pass file metadata here
+  renderIndex(directoryPath, files, subdirectories);
 
   fs.copyFileSync(CSS_FILE, `${OUTPUT_FOLDER}/${CSS_FILE}`);
 }
+
+// TODO: renderDirectory should return metadata for subdirectories too
+//       this can then be used by renderIndex to find thumbnail, etc.
+
+// TODO: update this function to accept `fileMetadata` rather than `files`
+//       fileMetadata contains the rendered names of files as well as tags
+//       render tags like "by" underneath images/videos
+//       use "main" tag to find the thumbnail
 
 function renderIndex(directoryPath, files, subdirectories) {
   let fileContents = "";
@@ -180,6 +190,18 @@ async function renderFile(filePath) {
   const extension = path.extname(filePath);
   const directory = path.dirname(filePath);
   const fileName = path.basename(filePath, extension);
+  const split = fileName.split(TAG_CHARACTER);
+  const baseFileName = split[0].trim();
+  const renderedFileName = `${baseFileName}.${renderExtension(extension)}`;
+
+  const tags = Object.fromEntries(
+    split.slice(1).map((tag) => {
+      const splitTag = tag.trim().split("=");
+      const tagKey = splitTag[0];
+      const value = splitTag[1] ?? true;
+      return [tagKey, value];
+    })
+  );
 
   if (IGNORE_FOR_RENDER.includes(fileName)) {
     return;
@@ -194,8 +216,9 @@ async function renderFile(filePath) {
 
   // Look up hash in cache
   if (cacheTable[hash] !== undefined) {
-    // If the hash exists, return
-    return;
+    // If the hash exists, return early
+    console.log("HIT", "\t", filePath);
+    return { name: renderedFileName, tags };
   }
   console.log("RENDERING", "\t", filePath);
 
@@ -214,8 +237,8 @@ async function renderFile(filePath) {
     renderedFile = renderedFile.replace(/\{BREADCRUMB\}/g, breadCrumb);
 
     fs.writeFileSync(
-      `${OUTPUT_FOLDER}/${directory}/${fileName}.html`,
-      renderedFile
+      renderedFileName,
+      `${OUTPUT_FOLDER}/${directory}/${renderedFileName}`
     );
   } else if (VIDEO_EXTENSIONS.includes(extension)) {
     execFileSync("ffmpeg", [
@@ -230,17 +253,30 @@ async function renderFile(filePath) {
       "-movflags",
       "faststart",
       "-y",
-      `${OUTPUT_FOLDER}/${fileName}.mp4`,
+      `${OUTPUT_FOLDER}/${directory}/${renderedFileName}`,
     ]);
   } else {
     fs.copyFileSync(
       `${INPUT_FOLDER}/${filePath}`,
-      `${OUTPUT_FOLDER}/${filePath}`
+      `${OUTPUT_FOLDER}/${directory}/${renderedFileName}`
     );
   }
 
   // Add to cache
   newCacheTable[hash] = filePath;
+
+  return { name: renderedFileName, tags };
+}
+
+function renderExtension(extension) {
+  extension = extension.toLowerCase().substring(1);
+  if (extension === "md" || extension === "html") {
+    return "html";
+  } else if (VIDEO_EXTENSIONS.includes(extension)) {
+    return "mp4";
+  } else {
+    return extension;
+  }
 }
 
 function renderGallery(images, className) {
