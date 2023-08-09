@@ -67,6 +67,7 @@ function exec(command) {
 }
 
 async function renderDirectory(directoryPath) {
+  console.log("render directory", directoryPath);
   if (!fs.existsSync(`${OUTPUT_FOLDER}/${directoryPath}`)) {
     fs.mkdirSync(`${OUTPUT_FOLDER}/${directoryPath}`);
   }
@@ -83,20 +84,29 @@ async function renderDirectory(directoryPath) {
     return stat.isFile();
   });
 
-  for (const subdir of subdirectories) {
-    await renderDirectory(`${directoryPath}/${subdir}`);
-  }
-
-  const fileMetaData = await Promise.all(
-    files
-      .filter((file) => file !== "index.html" && file !== "index.md")
-      .map(async (file) => await renderFile(`${directoryPath}/${file}`))
+  console.log("subdirectories", subdirectories);
+  const subdirectoryMetaData = await Promise.all(
+    subdirectories.map(
+      async (subdir) => await renderDirectory(`${directoryPath}/${subdir}`)
+    )
   );
+  console.log("subdirectoriesMetadata", subdirectories);
 
-  // TODO: pass file metadata here
-  renderIndex(directoryPath, files, subdirectories);
+  const fileMetaData = (
+    await Promise.all(
+      files
+        .filter((file) => file !== "index.html" && file !== "index.md")
+        .map(async (file) => await renderFile(`${directoryPath}/${file}`))
+    )
+  ).filter((file) => file); // filter out undefined values for files which have no metadata
 
-  fs.copyFileSync(CSS_FILE, `${OUTPUT_FOLDER}/${CSS_FILE}`);
+  renderIndex(directoryPath, fileMetaData, subdirectoryMetaData);
+
+  const name = directoryPath.split("/").at(-1);
+
+  // Return metadata for this subdirectory
+  const thumbnail = fileMetaData.find((file) => file.tags["main"]);
+  return { name, thumbnail: thumbnail?.name };
 }
 
 // TODO: renderDirectory should return metadata for subdirectories too
@@ -123,63 +133,38 @@ function renderIndex(directoryPath, files, subdirectories) {
   } else {
     fileContents = "";
   }
-
   let renderedFile = template.replace(/\{BODY\}/g, fileContents);
-
-  const allImageFiles = files.filter((file) =>
-    [".jpg", ".jpeg", ".png"].includes(path.extname(file).toLocaleLowerCase())
+  const imageFiles = files.filter((file) =>
+    [".jpg", ".jpeg", ".png"].includes(
+      path.extname(file.name).toLocaleLowerCase()
+    )
   );
   const videoFiles = files.filter((file) =>
-    [".mov", ".mp4"].includes(path.extname(file).toLocaleLowerCase())
+    [".mov", ".mp4"].includes(path.extname(file.name).toLocaleLowerCase())
   );
-
-  const specialImageFiles = allImageFiles.filter((file) =>
-    file.includes("+special")
-  );
-  const normalImageFiles = allImageFiles.filter(
-    (file) => !file.includes("+special")
-  );
-
   const otherFiles = files
-    .filter((file) => !ALL_MEDIA_EXTENSIONS.includes(path.extname(file)))
-    .filter((file) => !IGNORE_FOR_LIST.includes(path.basename(file)));
-
-  const specialImageList = renderGallery(specialImageFiles, "special");
-  const imageList = renderGallery(normalImageFiles);
+    .filter((file) => !ALL_MEDIA_EXTENSIONS.includes(path.extname(file.name)))
+    .filter((file) => !IGNORE_FOR_LIST.includes(path.basename(file.name)));
+  const imageList = renderGallery(imageFiles);
   const videoList = renderVideoGallery(videoFiles);
   const fileList = otherFiles
-    .map((file) => `<li><a href="${file}">${file}</a></li>`)
+    .map((file) => `<li><a href="${file.name}">${file.name}</a></li>`)
     .join("\n");
-
   const subdirList = subdirectories
     .map((dir) => {
-      const allFiles = fs.readdirSync(
-        `${INPUT_FOLDER}/${directoryPath}/${dir}`
-      );
-      const mainFile = allFiles.find((file) => file.includes("+main"));
-      const ignoreFile = allFiles.includes("IGNORE");
-
-      if (ignoreFile) {
-        return "";
-      }
-
-      const name = renderName(dir);
-      if (mainFile) {
-        return `<li><a href="${dir}"><img src="${dir}/${mainFile}" class="thumbnail">${name}</a></li>`;
+      const name = renderName(dir.name);
+      if (dir.thumbnail) {
+        return `<li><a href="${dir.name}"><img src="${dir.name}/${dir.thumbnail}" class="thumbnail">${name}</a></li>`;
       } else {
-        return `<li><a href="${dir}">${name}</a></li>`;
+        return `<li><a href="${dir.name}">${name}</a></li>`;
       }
     })
     .join("\n");
-
-  const allFiles = specialImageList + videoList + imageList + fileList;
-
+  const allFiles = videoList + imageList;
   const breadCrumb = renderBreadCrumbs(directoryPath);
-
   renderedFile = renderedFile.replace(/\{SUBDIRS\}/g, subdirList);
   renderedFile = renderedFile.replace(/\{FILES\}/g, allFiles);
   renderedFile = renderedFile.replace(/\{BREADCRUMB\}/g, breadCrumb);
-
   fs.writeFileSync(
     `${OUTPUT_FOLDER}/${directoryPath}/index.html`,
     renderedFile
@@ -287,7 +272,12 @@ function renderGallery(images, className) {
   className = className ?? "";
   const imageList = images.map(
     (image) =>
-      `<div class='image ${className}' ><a href='${image}'><img src='${image}'></a></div>`
+      `<div class='image ${className}' >
+        <a href='${image.name}'>
+          <img src='${image.name}'>
+        </a>
+        ${JSON.stringify(image.tags)}
+      </div>`
   );
   return `
     <div class='image-gallery ${className}'>
@@ -305,8 +295,9 @@ function renderVideoGallery(videos) {
     (video) => `
     <div class='video'>
       <video controls>
-        <source src="${video}" type="video/mp4">
+        <source src="${video.name}" type="video/mp4">
       </video>
+      ${JSON.stringify(video.tags)}
     </div>
   `
   );
@@ -338,6 +329,7 @@ function renderName(file) {
 
 async function main() {
   await renderDirectory("");
+  fs.copyFileSync(CSS_FILE, `${OUTPUT_FOLDER}/${CSS_FILE}`);
   writeCache();
 }
 
